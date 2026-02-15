@@ -1,257 +1,165 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code when working with code in this repository.
-
 ## Project Overview
 
-Neptune is a Python web automation script for booking sauna reservations on the BPSB system. The script uses Selenium WebDriver to interact with the booking website, featuring:
-- Complete Romanian user interface
-- CSV-based configuration
-- Support for couple/group bookings
-- **Layered reliability with selector fallbacks**
-- **SQLite-based logging and data collection**
-- **Silent data collection mode for cron jobs**
-- **Appointment management (view/delete)**
-- **Post-booking verification with login**
+Neptune is a fast HTTP-only CLI for booking sauna reservations on the BPSB system (Baia Populara Sibiu). No browser needed — uses direct HTTP requests via `requests.Session()`.
+
+**Active script:** `neptun_fast.py` (~300 lines)
+**Legacy script:** `neptun.py` (~2500 lines, Selenium-based, superseded)
 
 ## File Structure
 
 ```
-Script Neptun/
-├── neptun.py          # Main automation script (~2500 lines)
-├── neptun.db          # SQLite database (auto-created)
-├── screenshots/       # Error screenshots (auto-created)
-├── input.csv          # Subscription codes configuration
-├── .env               # Login credentials (not committed)
-├── .env.example       # Credentials template
-├── Makefile           # Build and run commands
-├── requirements.txt   # Python dependencies
-├── README.md          # Project documentation
-└── CLAUDE.md          # AI assistant instructions
+├── neptun_fast.py       # Active CLI script (HTTP-only)
+├── neptun.py            # Legacy Selenium script (not used)
+├── neptun.db            # SQLite database (auto-created)
+├── .env                 # Credentials and config (not committed)
+├── Makefile             # Build and run commands
+├── check-availability.sh # Wrapper for evening slot check
+├── pyproject.toml       # uv project config
+├── docs/
+│   ├── api-discovery.md # All BPSB endpoints and payloads
+│   └── plans/           # Implementation plans
+└── .learnings/          # Session learnings and error logs
 ```
 
 ## Dependencies and Setup
 
-**Requirements:**
-- Python 3.x with Selenium
-- Chrome browser with ChromeDriver installed
-- UV package manager (recommended)
+**Requirements:** Python 3.13, uv
 
-**Running the script:**
 ```bash
-# Interactive booking
-make run              # Windowed mode
-make run-headless     # Headless mode
-
-# Appointment management (requires .env credentials)
-make status           # View current appointments
-make delete           # Delete appointments interactively
-
-# Data collection (for cron)
-make collect          # Collect all subscriptions
-make collect-verbose  # With verbose output
-
-# Database management
-make db-status        # Show statistics
-make db-availability  # Show recent data
-make db-clean         # Remove database
+uv sync                  # Install dependencies
 ```
 
-## Architecture and Code Structure
+**Environment variables (`.env`):**
+```bash
+NEPTUN_SUBSCRIPTIONS='5642ece785:Kicky,3adc06c0e8:Adrian'
+NEPTUN_EMAIL=your@email.com
+NEPTUN_PASSWORD=yourpassword
+```
 
-### Core Classes (Reliability Infrastructure)
+## Running
 
-**SelectorRegistry**
-- Centralized selector management with fallback chains
-- Each element has: CSS (primary), XPath (fallback), text-based (last resort)
-- Legacy absolute XPaths preserved as comments for reference
+```bash
+make check               # Check availability + interactive booking
+make check-evening       # Check 17:30-21:00 slot specifically
+make status              # View current appointments (requires login)
+make delete              # Delete appointments interactively
+make collect             # Collect availability data (for cron)
+make collect-verbose     # Collect with verbose output
+```
 
-**ElementFinder**
-- Robust element location with automatic fallback
-- Built-in retry logic with exponential backoff
-- Logs which selector method succeeded
+Direct CLI usage:
+```bash
+uv run python neptun_fast.py check -v --days 14 --slot "17:30 - 21:00"
+uv run python neptun_fast.py check -s 5642ece785 --days 7
+uv run python neptun_fast.py status -v
+uv run python neptun_fast.py delete
+uv run python neptun_fast.py collect -v
+```
 
-**DatabaseManager**
-- SQLite operations for logging and data collection
-- Tables: `sessions`, `availability`, `booking_attempts`, `audit_log`, `error_details`
-- Auto-creates database and schema on first run
+## Architecture
 
-**NeptunLogger**
-- Dual logging: Romanian console messages, English database entries
-- Tracks action counts and error counts per session
+### BPSBClient class
 
-**StateVerifier**
-- Verifies actions completed successfully
-- Captures screenshots on errors
-- Validates page state at checkpoints
+Wraps all HTTP interactions with the BPSB booking system.
 
-**AvailabilityCollector**
-- Silent `--collect` mode for cron jobs
-- Scrapes all dates and slots
-- Logs availability data to SQLite
+**Key methods:**
+- `init_booking_session(code)` — walks steps 1-3, returns date constraints + subscription info
+- `get_slots_for_date(date)` — queries step4 for available slots on a date
+- `book_slot(interval_id)` — two-phase: add to cart (`/register`) then commit (`/final`)
+- `login(email, password)` — authenticates with CSRF token
+- `get_appointments()` — lists booked appointments (must be logged in)
+- `delete_appointment(id)` — deletes appointment by base64 ID
+
+**Subscription info** (parsed from step2):
+- `sub_info["sessions_remaining"]` — sessions left on subscription
+- `sub_info["valid_to"]` — subscription expiry date
+- `sub_info["type"]` — subscription type name
+
+### BPSB Booking Flow (HTTP)
+
+```
+Step 1: GET  /step1              → establish PHP session (PHPSESSID cookie)
+Step 2: POST /step2              → submit subscription code, get sub_id + resource_id + metadata
+Step 3: POST /step3              → select resource, get datepicker constraints
+Step 4: POST /step4              → get slots for a date (repeatable within session)
+Step 5: POST /register           → add slot to cart (temporary hold)
+Step 6: GET  /final              → commit cart → real appointment created
+        GET  /remove/{index}     → remove item from cart (0-based)
+```
+
+**Critical:** `/register` only adds to cart. Without `/final`, nothing is booked.
+The confirmation text is: "Programarea a fost adaugata cu succes"
+
+**Slot HTML structure** (step4): interval ID comes BEFORE time in the DOM:
+```html
+<input name="interval" value="972">
+<h5>Grupa 07:00 - 10:30</h5>
+<p>Locuri disponibile: 18</p>
+```
+
+### DB class
+
+Minimal SQLite logger. Single table:
+```sql
+availability(id, timestamp, subscription_code, date, time_slot, spots_available, session_id)
+```
 
 ### Exit Codes
 
-| Code | Constant | Meaning |
-|------|----------|---------|
-| 0 | SUCCESS | Operation completed |
-| 1 | INVALID_SUBSCRIPTION | Bad subscription code |
-| 2 | NO_AVAILABILITY | No slots available |
-| 3 | BOOKING_FAILED | Booking operation failed |
-| 4 | NETWORK_ERROR | Connection issues |
-| 5 | ELEMENT_NOT_FOUND | Page structure changed |
-| 6 | TIMEOUT | Operation timed out |
-| 99 | UNKNOWN_ERROR | Unexpected error |
-
-### Helper Functions (Legacy)
-
-**Configuration Management**
-- `choose_subscription_code()` - loads subscription codes from `input.csv`
-- `load_subscription_codes()` - returns list of codes for collection mode
-- `create_browser_options()` - configures Chrome for headless/windowed
-
-**Slot Management**
-- `parse_slot_info()` - extracts availability from slot elements
-- `get_available_timeslots()` - finds all available booking slots
-- `select_multiple_slots()` - handles user selection with duplicate support
-- `process_slot_selection()` - processes individual slot booking
-
-**Calendar Navigation**
-- `check_and_navigate_calendar()` - navigates to months with sufficient availability
-- `get_available_dates()` - extracts available dates from calendar table
-- `count_available_dates()` - counts available dates in current view
-
-**Validation**
-- `validate_slot_selections()` - ensures selections meet all constraints
-- `validate_quantity()` - validates requested quantity against limits
-- `get_max_reservations()` / `get_remaining_reservations()` - extracts booking limits
-
-## Selector Strategy
-
-The `SelectorRegistry` class centralizes all selectors with fallback chains:
-
-```python
-"subscription_input": {
-    "css": "form div input[type='text']",           # Primary
-    "xpath": "//form//input[@type='text']",         # Fallback
-    "text": None,                                    # Text-based (if applicable)
-    # Legacy: /html/body/div[1]/div/.../form/div/input
-}
-```
-
-When a CSS selector fails, the system automatically tries XPath, then text-based matching.
-
-## SQLite Schema
-
-```sql
--- Availability snapshots (for --collect mode)
-availability(id, timestamp, subscription_code, date, time_slot, spots_available, session_id)
-
--- Booking attempts log
-booking_attempts(id, timestamp, subscription_code, date, time_slot, success, error_message)
-
--- Audit trail for all actions
-audit_log(id, timestamp, action_type, element_name, selector_method, success, duration_ms)
-```
-
-## CLI Arguments
-
-```
-python neptun.py [options]
-
-Options:
-  --headless        Run without browser window
-  --status          View current appointments (requires .env credentials)
-  --delete          Delete appointments interactively (requires .env credentials)
-  --collect         Silent data collection mode (implies --headless)
-  --all             Collect for all subscriptions
-  -s, --subscription CODE   Use specific subscription code
-  -v, --verbose     Verbose output
-  --db FILE         Custom database path
-```
-
-## Booking Flow
-
-1. **Code Selection**: Dynamic display from CSV with fallback
-2. **Subscription Validation**: Error detection with state verification
-3. **Reservation Management**: Capacity checking with ElementFinder
-4. **Date Selection**: Calendar navigation with retry logic
-5. **Slot Selection**: Multiple selection with duplicate support
-6. **Processing**: Slot booking with stale element recovery
-7. **Completion**: Success confirmation with database logging
-
-## Data Collection Flow (--collect mode)
-
-1. Load subscription codes from `input.csv`
-2. For each subscription:
-   - Navigate to booking page
-   - Enter subscription code
-   - Verify subscription is valid
-   - Extract available dates
-   - For each date, extract slot availability
-   - Log all data to SQLite
-3. Return exit code for cron
-
-## Makefile Commands
-
-```bash
-# Interactive Booking
-make run              # Run booking wizard (windowed)
-make run-headless     # Run booking wizard (headless)
-
-# Appointment Management
-make status           # View current appointments (headless)
-make delete           # Delete appointments interactively (headless)
-
-# Data Collection
-make collect          # Collect availability for all subscriptions
-make collect-verbose  # Collect with verbose output
-
-# Database Management
-make db-status        # Show database statistics
-make db-availability  # Show recent availability data
-make db-clean         # Remove database
-
-# Setup
-make install          # Install dependencies with UV
-make clean            # Clean caches and temp files
-```
-
-## Error Handling Patterns
-
-**Selector Fallbacks**: CSS → XPath → text-based, with logging of which method succeeded
-
-**Retry with Backoff**: `@with_retry` decorator provides exponential backoff for flaky operations
-
-**Stale Element Recovery**: Automatic fresh element fetching when DOM changes
-
-**State Verification**: Checkpoints verify expected state before proceeding
-
-**Screenshot on Error**: Captures page state for debugging
-
-## Cron Job Setup
-
-```bash
-# Example crontab entry (every 2 hours)
-0 */2 * * * cd /path/to/Script\ Neptun && make collect >> /var/log/neptun.log 2>&1
-
-# Check exit code for alerting
-make collect; echo "Exit code: $?"
-```
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Invalid subscription |
+| 2 | No availability |
+| 3 | Booking failed |
+| 4 | Network error |
+| 99 | Unknown error |
 
 ## Configuration
 
-### Subscription Codes (`input.csv`)
-```csv
-code,name
-5642ece785,Kicky
-3adc06c0e8,Adrian
+**Subscription format** in `.env`:
+```
+NEPTUN_SUBSCRIPTIONS='code1:Name1,code2:Name2'
 ```
 
-Add new users by appending rows to this file.
+**Login credentials** (needed for `status` and `delete` commands):
+```
+NEPTUN_EMAIL=your@email.com
+NEPTUN_PASSWORD=yourpassword
+```
 
-## Future Extensibility
+## Date Constraints
 
-- **Notification interface**: Designed for Telegram/Pushover (not implemented)
-- **Config file support**: Can add `neptun.yaml` for complex configuration
-- **Preferred time filtering**: Can add to collector mode
+The datepicker has constraints parsed from step3 JS:
+- `daysOfWeekDisabled: "0,1"` — Sunday (0) and Monday (1) closed
+- Holiday blackout dates hardcoded in JS
+- `valabilityEnd` — subscription expiry (max 30 days ahead)
+
+## Performance
+
+| Operation | Selenium | HTTP |
+|-----------|----------|------|
+| Check 7 dates | ~30-60s | **2s** |
+| Check 30 dates | ~2-3 min | **10s** |
+| Login + list | ~8-10s | **1.5s** |
+| Memory | ~200MB | ~5MB |
+
+## Cron Setup
+
+```bash
+# Every 2 hours, collect availability data
+0 */2 * * * cd /path/to/project && make collect >> ~/logs/neptun.log 2>&1
+```
+
+Non-interactive mode is safe — `input()` prompts are skipped when stdin is not a TTY.
+
+## API Reference
+
+See `docs/api-discovery.md` for full endpoint documentation with payloads and responses.
+
+# currentDate
+Today's date is 2026-02-16.
+
+      IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.
