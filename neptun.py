@@ -1594,55 +1594,61 @@ def get_available_timeslots(driver):
 def validate_slot_selections(selected_slots, requested_quantity, remaining_reservations):
     """
     Validates if the selected slots meet all constraints.
+    Now supports booking multiple spots in the same slot.
     Returns tuple (is_valid, message)
     """
-    total_places = sum(slot["available_places"] for slot in selected_slots)
-
     if len(selected_slots) != requested_quantity:
-        return False, f"Trebuie să selectați exact {requested_quantity} sloturi."
+        return False, f"Trebuie să selectați exact {requested_quantity} locuri."
 
     if requested_quantity > remaining_reservations:
-        return False, f"Ați solicitat {requested_quantity} sloturi dar aveți doar {remaining_reservations} rezervări rămase."
+        return False, f"Ați solicitat {requested_quantity} locuri dar aveți doar {remaining_reservations} rezervări rămase."
 
-    # Check each slot's availability
-    for slot in selected_slots:
-        if requested_quantity > slot["available_places"]:
-            return False, f"Slotul {slot['number']} are doar {slot['available_places']} locuri disponibile, dar ați solicitat {requested_quantity}."
+    # For same-slot booking, check if the slot has enough capacity
+    if selected_slots:
+        first_slot = selected_slots[0]
+        if requested_quantity > first_slot["available_places"]:
+            return False, f"Slotul {first_slot['number']} are doar {first_slot['available_places']} locuri disponibile, dar ați solicitat {requested_quantity}."
 
     return True, "Selecția este validă"
 
 def select_multiple_slots(available_slots, quantity):
     """
-    Allows user to select multiple slots at once.
-    Returns list of selected slots.
+    Allows user to select a single slot and book multiple spots in it.
+    Returns list of the same slot repeated 'quantity' times.
     """
-    selected_slots = []
-    print("\nVă rugăm introduceți numerele tuturor sloturilor pe care doriți să le selectați, separate prin spații.")
-    print(f"Trebuie să selectați {quantity} sloturi.")
+    print(f"\nAveți {quantity} rezervări de făcut.")
+    print("Selectați UN interval orar în care doriți să rezervați toate cele {quantity} locuri.")
 
     while True:
         try:
-            selections = input("Introduceți numerele sloturilor: ").strip().split()
-
-            # Convert to integers and validate
-            slot_numbers = [int(x) for x in selections]
-
-            # Validate quantity
-            if len(slot_numbers) != quantity:
-                print(f"Vă rugăm selectați exact {quantity} sloturi.")
-                continue
+            selection = input("Introduceți numărul slotului: ").strip()
+            slot_number = int(selection)
 
             # Validate range
-            if not all(1 <= num <= len(available_slots) for num in slot_numbers):
-                print(f"Vă rugăm introduceți numere între 1 și {len(available_slots)}")
+            if not (1 <= slot_number <= len(available_slots)):
+                print(f"Vă rugăm introduceți un număr între 1 și {len(available_slots)}")
                 continue
 
-            # Get the selected slots
-            selected_slots = [available_slots[num-1] for num in slot_numbers]
+            selected_slot = available_slots[slot_number - 1]
+            
+            # Check if slot has enough spots
+            if selected_slot['available_places'] < quantity:
+                print(f"⚠️  Slotul {slot_number} are doar {selected_slot['available_places']} locuri disponibile.")
+                print(f"   Aveți nevoie de {quantity} locuri.")
+                confirm = input("Doriți să alegeți alt slot? (d/n): ").strip().lower()
+                if confirm == 'd' or confirm == 'da':
+                    continue
+                else:
+                    # Reduce quantity to available
+                    quantity = selected_slot['available_places']
+                    print(f"Se vor rezerva {quantity} locuri în acest slot.")
+
+            # Return the same slot repeated 'quantity' times
+            selected_slots = [selected_slot.copy() for _ in range(quantity)]
             return selected_slots
 
         except ValueError:
-            print("Vă rugăm introduceți numere valide separate prin spații.")
+            print("Vă rugăm introduceți un număr valid.")
 
 def get_remaining_reservations(driver):
     """
@@ -1883,18 +1889,20 @@ def get_max_reservations(driver):
 
 def get_quantity(max_reservations):
     """
-    Get the desired quantity of items from user, ensuring it doesn't exceed the maximum.
+    Get the desired quantity of spots from user, ensuring it doesn't exceed the maximum.
+    Now supports booking multiple spots in the same time slot.
     """
     while True:
         try:
-            print(f"\nPuteți rezerva până la {max_reservations} rezervări.")
-            quantity = int(input("Câte rezervări doriți să faceți? "))
+            print(f"\nPuteți rezerva până la {max_reservations} locuri.")
+            print("(Toate locurile vor fi rezervate în același interval orar)")
+            quantity = int(input("Câte locuri doriți să rezervați? "))
             if 0 < quantity <= max_reservations:
                 return quantity
             elif quantity <= 0:
                 print("Vă rugăm introduceți un număr mai mare de 0.")
             else:
-                print(f"Nu puteți rezerva mai mult de {max_reservations} rezervări.")
+                print(f"Nu puteți rezerva mai mult de {max_reservations} locuri.")
         except ValueError:
             print("Vă rugăm introduceți un număr valid.")
 
