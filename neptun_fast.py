@@ -132,3 +132,52 @@ class BPSBClient:
         # Check for success indicators in response
         # The register endpoint redirects or shows confirmation
         return r.status_code == 200
+
+    def login(self, email, password):
+        """Login to BPSB. Returns True on success."""
+        # Load login page to get CSRF token
+        r = self.session.get(f"{BASE_URL}/login", timeout=15)
+        csrf = re.search(r'name="_csrf_token"\s+value="([^"]+)"', r.text)
+        if not csrf:
+            return False
+
+        r = self.session.post(f"{BASE_URL}/login_check", data={
+            "_csrf_token": csrf.group(1),
+            "_username": email,
+            "_password": password,
+            "_submit": "Autentificare",
+        }, timeout=15)
+
+        return "/login" not in r.url
+
+    def get_appointments(self):
+        """Get current appointments. Returns list of dicts. Must be logged in."""
+        r = self.session.get(f"{BASE_URL}/client-user/appointments", timeout=15)
+        if "/login" in r.url:
+            return None  # Not logged in
+
+        appointments = []
+        rows = re.findall(r'<tr[^>]*>(.*?)</tr>', r.text, re.DOTALL)
+        for row in rows:
+            cells = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL)
+            if len(cells) < 5:
+                continue
+            clean = lambda s: re.sub(r'<[^>]+>', ' ', s).strip()
+            delete_match = re.search(r'data-id="([^"]+)"', row)
+            appointments.append({
+                "resource": clean(cells[1]),
+                "datetime": clean(cells[2]),
+                "places": clean(cells[3]),
+                "price": clean(cells[4]),
+                "delete_id": delete_match.group(1) if delete_match else None,
+            })
+        return appointments
+
+    def delete_appointment(self, delete_id):
+        """Delete an appointment by its ID. Returns True on success."""
+        r = self.session.get(f"{BASE_URL}/appointment/delete/{delete_id}", timeout=15)
+        try:
+            data = r.json()
+            return True
+        except Exception:
+            return r.status_code == 200
