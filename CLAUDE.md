@@ -4,14 +4,14 @@
 
 Neptune is a fast HTTP-only CLI for booking sauna reservations on the BPSB system (Baia Populara Sibiu). No browser needed — uses direct HTTP requests via `requests.Session()`.
 
-**Active script:** `neptun_fast.py` (~300 lines)
-**Legacy script:** `neptun.py` (~2500 lines, Selenium-based, superseded)
+**Active script:** `neptun_fast.py` (~588 lines)
+
+**IMPORTANT:** Do NOT use or reference anything in `legacy/`. That code is the old Selenium-based approach — completely superseded by `neptun_fast.py`.
 
 ## File Structure
 
 ```
 ├── neptun_fast.py       # Active CLI script (HTTP-only)
-├── neptun.py            # Legacy Selenium script (not used)
 ├── neptun.db            # SQLite database (auto-created)
 ├── .env                 # Credentials and config (not committed)
 ├── Makefile             # Build and run commands
@@ -20,6 +20,9 @@ Neptune is a fast HTTP-only CLI for booking sauna reservations on the BPSB syste
 ├── docs/
 │   ├── api-discovery.md # All BPSB endpoints and payloads
 │   └── plans/           # Implementation plans
+├── legacy/              # OLD Selenium scripts — DO NOT USE
+│   ├── neptun.py        # Superseded by neptun_fast.py
+│   └── main.py          # Unused scaffold
 └── .learnings/          # Session learnings and error logs
 ```
 

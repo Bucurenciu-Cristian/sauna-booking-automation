@@ -2911,6 +2911,163 @@ def load_subscription_codes():
     return codes
 
 
+def run_check_mode(slot='17:30 - 21:00', days=7, subscription=None, db_path=DB_FILE, verbose=False):
+    """
+    Check availability for a specific time slot in the next N days.
+    Uses direct HTTP requests (no browser) for speed.
+    Returns exit code: SUCCESS if spots found, NO_AVAILABILITY otherwise.
+    """
+    import requests as http_requests
+    from datetime import datetime, timedelta
+
+    BASE_URL = "https://bpsb.registo.ro/client-interface/appointment-subscription"
+    t_start = time.time()
+
+    print(f"\n=== Sauna Evening Check ===")
+    print(f"Checking {slot} for next {days} days...\n")
+
+    # Determine subscription
+    if subscription:
+        codes = [{'code': subscription, 'name': 'CLI'}]
+    else:
+        codes = load_subscription_codes()
+        if not codes:
+            print("No subscription codes found. Set NEPTUN_SUBSCRIPTIONS or use -s CODE.")
+            return ExitCode.INVALID_SUBSCRIPTION
+        codes = [codes[0]]  # Use first subscription only
+
+    code = codes[0]['code']
+    name = codes[0]['name']
+
+    if verbose:
+        print(f"Subscription: {name} ({code})")
+
+    # Establish HTTP session and walk through booking steps
+    session = http_requests.Session()
+    session.headers.update({"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"})
+
+    try:
+        # Step 1: Load page (establishes PHP session)
+        r1 = session.get(f"{BASE_URL}/step1", timeout=15)
+        r1.raise_for_status()
+
+        # Step 2: Submit subscription code
+        r2 = session.post(f"{BASE_URL}/step2", data={"clientInput": code}, timeout=15)
+        r2.raise_for_status()
+
+        # Extract subscription ID and resource from hidden inputs
+        sub_match = re.search(r'name="subscription"\s+value="(\d+)"', r2.text)
+        res_match = re.search(r'name="resource"\s+value="(\d+)"', r2.text)
+        if not sub_match or not res_match:
+            print(f"Invalid subscription code: {code}")
+            return ExitCode.INVALID_SUBSCRIPTION
+
+        sub_id = sub_match.group(1)
+        resource_id = res_match.group(1)
+
+        # Step 3: Select sauna resource (establishes calendar context)
+        r3 = session.post(f"{BASE_URL}/step3",
+                         data={"resource": resource_id, "subscription": sub_id}, timeout=15)
+        r3.raise_for_status()
+
+        # Parse date constraints from datepicker JS config
+        disabled_dow = set()
+        dow_match = re.search(r'daysOfWeekDisabled:\s*"([\d,]+)"', r3.text)
+        if dow_match:
+            disabled_dow = {int(d) for d in dow_match.group(1).split(',')}
+
+        # Extract holiday blackout dates
+        blackout_dates = set(re.findall(r'e\.format\(\)=="(\d{4}-\d{2}-\d{2})"', r3.text))
+
+        # Parse validity window
+        val_start_match = re.search(r'moment\("(\d{4}-\d{2}-\d{2})"\);\s*\n\s*var today', r3.text)
+        val_end_match = re.search(r'var valabilityEnd\s*=\s*moment\("(\d{4}-\d{2}-\d{2})"\)', r3.text)
+
+        today = datetime.now()
+        end_check = today + timedelta(days=days)
+
+        # Constrain to validity window (capped at 30 days from today per server logic)
+        if val_end_match:
+            val_end = datetime.strptime(val_end_match.group(1), '%Y-%m-%d')
+            max_date = min(val_end, today + timedelta(days=30))
+            end_check = min(end_check, max_date)
+
+        # Generate candidate dates
+        candidate_dates = []
+        d = today
+        while d <= end_check:
+            date_str = d.strftime('%Y-%m-%d')
+            # day_of_week: Sunday=0, Monday=1, ... Saturday=6 (JS convention)
+            js_dow = (d.weekday() + 1) % 7
+            if js_dow not in disabled_dow and date_str not in blackout_dates:
+                candidate_dates.append(date_str)
+            d += timedelta(days=1)
+
+        if verbose:
+            print(f"Checking {len(candidate_dates)} candidate dates...")
+            if disabled_dow:
+                day_names = {0: 'Sun', 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri', 6: 'Sat'}
+                skipped = ', '.join(day_names[d] for d in sorted(disabled_dow))
+                print(f"Skipping: {skipped}")
+
+        # Step 4: Check each candidate date for the target slot
+        results = []
+        db = DatabaseManager(db_path)
+        session_id = db.create_session('check', subscription_codes=code)
+
+        for date_str in candidate_dates:
+            r4 = session.post(f"{BASE_URL}/step4", data={"date": date_str}, timeout=15)
+
+            # Parse slots from response
+            slot_times = re.findall(r'(\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2})', r4.text)
+            slot_avails = re.findall(r'Locuri disponibile:\s*(\d+)', r4.text)
+
+            # Log all slots to DB for trend tracking
+            for i, t in enumerate(slot_times):
+                spots = int(slot_avails[i]) if i < len(slot_avails) else 0
+                db.log_availability(session_id, code, date_str, t, spots, subscription_name=name)
+
+                # Check if this matches our target slot
+                if slot in t and spots > 0:
+                    results.append((date_str, spots))
+
+            if verbose and slot_times:
+                slots_summary = ', '.join(
+                    f"{t}({slot_avails[i] if i < len(slot_avails) else '?'})"
+                    for i, t in enumerate(slot_times)
+                )
+                print(f"  {date_str}: {slots_summary}")
+
+        db.end_session(session_id, ExitCode.SUCCESS, len(candidate_dates), 0)
+        db.close()
+
+    except http_requests.RequestException as e:
+        print(f"Network error: {e}")
+        return ExitCode.NETWORK_ERROR
+    except Exception as e:
+        print(f"Error: {e}")
+        return ExitCode.UNKNOWN_ERROR
+
+    elapsed = time.time() - t_start
+
+    # Print results
+    if results:
+        print(f"\nAVAILABLE:")
+        for date_str, spots in results:
+            try:
+                day_name = datetime.strptime(date_str, '%Y-%m-%d').strftime('%a')
+            except ValueError:
+                day_name = '???'
+            spot_word = 'spot' if spots == 1 else 'spots'
+            print(f"  {date_str} ({day_name}) - {spots} {spot_word}")
+        print(f"\nCompleted in {elapsed:.1f}s")
+        return ExitCode.SUCCESS
+    else:
+        print(f"No availability for {slot} in next {days} days.")
+        print(f"\nCompleted in {elapsed:.1f}s")
+        return ExitCode.NO_AVAILABILITY
+
+
 # =============================================================================
 # MAIN ENTRY POINT
 # =============================================================================
@@ -2931,6 +3088,7 @@ Examples:
   python neptun.py --collect -v       # Collect with verbose output
   python neptun.py --trends           # Show availability trends (30 days)
   python neptun.py --trends --trends-days 7  # Show trends for last 7 days
+  python neptun.py --check               # Check evening slot availability (next 7 days)
 
 Exit codes:
   0  - Success
@@ -2963,6 +3121,12 @@ Exit codes:
                        help='Show availability trends and analytics')
     parser.add_argument('--trends-days', type=int, default=30,
                        help='Number of days for trend analysis (default: 30)')
+    parser.add_argument('--check', action='store_true',
+                       help='Check availability for a specific time slot (implies --headless)')
+    parser.add_argument('--slot', type=str, default='17:30 - 21:00',
+                       help='Time slot to check (default: "17:30 - 21:00")')
+    parser.add_argument('--days', type=int, default=7,
+                       help='Number of days ahead to check (default: 7)')
 
     args = parser.parse_args()
 
@@ -2977,6 +3141,16 @@ Exit codes:
 
     if args.trends:
         exit_code = run_trends_mode(days=args.trends_days, db_path=args.db)
+        sys.exit(exit_code)
+
+    if args.check:
+        exit_code = run_check_mode(
+            slot=args.slot,
+            days=args.days,
+            subscription=args.subscription,
+            db_path=args.db,
+            verbose=args.verbose
+        )
         sys.exit(exit_code)
 
     # Collect mode implies headless
