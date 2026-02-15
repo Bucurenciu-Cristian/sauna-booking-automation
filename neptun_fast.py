@@ -95,32 +95,20 @@ class BPSBClient:
                               data={"date": date_str}, timeout=15)
 
         slots = []
-        # Each slot has a form with interval ID and nearby text with time + spots
+        # Real HTML order: interval → time (in <h5>) → spots
+        # Pattern: name="interval" value="ID" ... Grupa HH:MM - HH:MM ... Locuri disponibile: N
         forms = re.findall(
-            r'<h5[^>]*>(.*?)</h5>.*?'
+            r'name="interval"\s+value="(\d+)".*?'
             r'(\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}).*?'
-            r'Locuri disponibile:\s*(\d+).*?'
-            r'name="interval"\s+value="(\d+)"',
+            r'Locuri disponibile:\s*(\d+)',
             r.text, re.DOTALL
         )
-        for _, time_str, spots, interval_id in forms:
+        for interval_id, time_str, spots in forms:
             slots.append({
                 "time": time_str.strip(),
                 "spots": int(spots),
                 "interval_id": interval_id,
             })
-
-        # Fallback: parse time and spots separately if structured parsing misses
-        if not slots:
-            times = re.findall(r'(\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2})', r.text)
-            spots_list = re.findall(r'Locuri disponibile:\s*(\d+)', r.text)
-            intervals = re.findall(r'name="interval"\s+value="(\d+)"', r.text)
-            for i in range(min(len(times), len(spots_list), len(intervals))):
-                slots.append({
-                    "time": times[i].strip(),
-                    "spots": int(spots_list[i]),
-                    "interval_id": intervals[i],
-                })
 
         return slots
 
