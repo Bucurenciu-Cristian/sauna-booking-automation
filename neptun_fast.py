@@ -38,6 +38,7 @@ class BPSBClient:
         self.verbose = verbose
         self.subscription_id = None
         self.resource_id = None
+        self.sub_info = None  # subscription metadata from step2
 
     def log(self, msg):
         if self.verbose:
@@ -60,6 +61,9 @@ class BPSBClient:
 
         self.subscription_id = sub_match.group(1)
         self.resource_id = res_match.group(1)
+
+        # Parse subscription metadata from step2
+        self.sub_info = self._parse_subscription_info(r2.text)
 
         # Step 3: select sauna resource
         r3 = self.session.post(f"{BOOKING_URL}/step3",
@@ -88,6 +92,24 @@ class BPSBClient:
             constraints["max_date"] = min(end, datetime.now() + timedelta(days=30))
 
         return constraints
+
+    def _parse_subscription_info(self, html):
+        """Extract subscription metadata from step2 response."""
+        info = {}
+        name_match = re.search(r'<h4>(.*?)</h4>', html)
+        if name_match:
+            info["resource"] = name_match.group(1).strip()
+        type_match = re.search(r'</h4>\s*<br>\s*(.*?)\s*<br>', html, re.DOTALL)
+        if type_match:
+            info["type"] = type_match.group(1).strip()
+        validity_match = re.search(r'Valabilitate:\s*([\d.]+)\s*-\s*([\d.]+)', html)
+        if validity_match:
+            info["valid_from"] = validity_match.group(1)
+            info["valid_to"] = validity_match.group(2)
+        sessions_match = re.search(r'Sedinte disponibile:\s*(\d+)', html)
+        if sessions_match:
+            info["sessions_remaining"] = int(sessions_match.group(1))
+        return info
 
     def get_slots_for_date(self, date_str):
         """Get available slots for a date. Returns list of {time, spots, interval_id}."""
@@ -262,6 +284,13 @@ def cmd_check(args):
     if not constraints:
         print(f"Invalid subscription: {sub['code']}")
         return ExitCode.INVALID_SUBSCRIPTION
+
+    # Show subscription info
+    if client.sub_info:
+        si = client.sub_info
+        remaining = si.get("sessions_remaining", "?")
+        valid_to = si.get("valid_to", "?")
+        print(f"  {sub['name']}: {remaining} sessions remaining (valid to {valid_to})")
 
     dates = candidate_dates(constraints, args.days)
     client.log(f"Checking {len(dates)} dates for {sub['name']}...")
