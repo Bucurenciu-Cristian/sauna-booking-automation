@@ -210,3 +210,42 @@ class DB:
 
     def close(self):
         self.conn.close()
+
+
+def load_subscriptions():
+    """Load subscription codes from NEPTUN_SUBSCRIPTIONS env var."""
+    raw = os.getenv("NEPTUN_SUBSCRIPTIONS", "")
+    codes = []
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if ":" in pair:
+            code, name = pair.split(":", 1)
+            codes.append({"code": code.strip(), "name": name.strip()})
+    return codes
+
+
+def get_credentials():
+    """Load login credentials from env."""
+    email = os.getenv("NEPTUN_EMAIL")
+    password = os.getenv("NEPTUN_PASSWORD")
+    if email and password:
+        return {"email": email, "password": password}
+    return None
+
+
+def candidate_dates(constraints, days):
+    """Generate bookable dates for the next N days respecting constraints."""
+    today = datetime.now()
+    end = today + timedelta(days=days)
+    if constraints.get("max_date"):
+        end = min(end, constraints["max_date"])
+
+    dates = []
+    d = today
+    while d <= end:
+        ds = d.strftime("%Y-%m-%d")
+        js_dow = (d.weekday() + 1) % 7  # Python Mon=0 → JS Sun=0
+        if js_dow not in constraints.get("disabled_dow", set()) and ds not in constraints.get("blackout_dates", set()):
+            dates.append(ds)
+        d += timedelta(days=1)
+    return dates
