@@ -427,3 +427,46 @@ def cmd_delete(args):
 
     print(f"\n{deleted}/{len(to_delete)} deleted.")
     return ExitCode.SUCCESS
+
+
+def cmd_collect(args):
+    """Collect availability data for all subscriptions (cron mode)."""
+    subs = load_subscriptions()
+    if args.subscription:
+        subs = [{"code": args.subscription, "name": "CLI"}]
+    if not subs:
+        print("No subscription codes found.")
+        return ExitCode.INVALID_SUBSCRIPTION
+
+    db = DB(args.db)
+    total_slots = 0
+    errors = 0
+
+    for sub in subs:
+        client = BPSBClient(verbose=args.verbose)
+        constraints = client.init_booking_session(sub["code"])
+        if not constraints:
+            print(f"Invalid subscription: {sub['code']}")
+            errors += 1
+            continue
+
+        dates = candidate_dates(constraints, 30)
+        session_id = str(uuid.uuid4())[:8]
+
+        for date_str in dates:
+            try:
+                slots = client.get_slots_for_date(date_str)
+                for s in slots:
+                    db.log_slot(session_id, sub["code"], date_str, s["time"], s["spots"])
+                    total_slots += 1
+            except Exception as e:
+                if args.verbose:
+                    print(f"  Error {date_str}: {e}")
+                errors += 1
+
+        if args.verbose:
+            print(f"  {sub['name']}: collected {total_slots} slots")
+
+    db.close()
+    print(f"Collected {total_slots} slots, {errors} errors.")
+    return ExitCode.SUCCESS if errors == 0 else ExitCode.NETWORK_ERROR
