@@ -470,3 +470,56 @@ def cmd_collect(args):
     db.close()
     print(f"Collected {total_slots} slots, {errors} errors.")
     return ExitCode.SUCCESS if errors == 0 else ExitCode.NETWORK_ERROR
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Neptune — Fast sauna booking CLI")
+    parser.add_argument("-s", "--subscription", help="Subscription code")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    parser.add_argument("--db", default=DB_FILE, help="Database path")
+
+    sub = parser.add_subparsers(dest="command")
+
+    # check (default)
+    p_check = sub.add_parser("check", help="Check availability and optionally book")
+    p_check.add_argument("--slot", default=None, help='Filter by time slot (e.g. "17:30 - 21:00")')
+    p_check.add_argument("--days", type=int, default=7, help="Days ahead to check (default: 7)")
+
+    # status
+    sub.add_parser("status", help="View current appointments")
+
+    # delete
+    sub.add_parser("delete", help="Delete appointments interactively")
+
+    # collect
+    sub.add_parser("collect", help="Collect availability data (for cron)")
+
+    args = parser.parse_args()
+
+    # Default to check if no command given
+    if not args.command:
+        args.command = "check"
+        args.slot = None
+        args.days = 7
+
+    commands = {
+        "check": cmd_check,
+        "status": cmd_status,
+        "delete": cmd_delete,
+        "collect": cmd_collect,
+    }
+
+    try:
+        exit_code = commands[args.command](args)
+    except requests.RequestException as e:
+        print(f"Network error: {e}")
+        exit_code = ExitCode.NETWORK_ERROR
+    except KeyboardInterrupt:
+        print("\nCancelled.")
+        exit_code = ExitCode.UNKNOWN_ERROR
+
+    sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()
