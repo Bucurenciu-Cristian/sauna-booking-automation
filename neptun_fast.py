@@ -181,3 +181,32 @@ class BPSBClient:
             return True
         except Exception:
             return r.status_code == 200
+
+
+class DB:
+    """Minimal SQLite logger for availability tracking."""
+
+    def __init__(self, path=DB_FILE):
+        self.conn = sqlite3.connect(path)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS availability (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT DEFAULT (datetime('now')),
+                subscription_code TEXT,
+                date TEXT,
+                time_slot TEXT,
+                spots_available INTEGER,
+                session_id TEXT
+            )
+        """)
+        self.conn.commit()
+
+    def log_slot(self, session_id, code, date, time_slot, spots):
+        self.conn.execute(
+            "INSERT INTO availability (session_id, subscription_code, date, time_slot, spots_available) VALUES (?, ?, ?, ?, ?)",
+            (session_id, code, date, time_slot, spots),
+        )
+        self.conn.commit()
+
+    def close(self):
+        self.conn.close()
