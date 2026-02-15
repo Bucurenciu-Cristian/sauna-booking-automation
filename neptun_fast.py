@@ -340,3 +340,90 @@ def cmd_check(args):
         print("  Invalid selection.")
 
     return ExitCode.SUCCESS
+
+
+def cmd_status(args):
+    """Show current appointments."""
+    creds = get_credentials()
+    if not creds:
+        print("Missing NEPTUN_EMAIL/NEPTUN_PASSWORD in .env")
+        return ExitCode.UNKNOWN_ERROR
+
+    client = BPSBClient(verbose=args.verbose)
+    if not client.login(creds["email"], creds["password"]):
+        print("Login failed.")
+        return ExitCode.NETWORK_ERROR
+
+    appointments = client.get_appointments()
+    if not appointments:
+        print("No appointments found.")
+        return ExitCode.SUCCESS
+
+    print(f"\n{'='*60}")
+    print(f"  CURRENT APPOINTMENTS ({len(appointments)})")
+    print(f"{'='*60}")
+    for i, a in enumerate(appointments):
+        print(f"  [{i+1}] {a['resource']}  {a['datetime']}  ({a['places']} places, {a['price']} RON)")
+    print(f"{'='*60}\n")
+    return ExitCode.SUCCESS
+
+
+def cmd_delete(args):
+    """Delete appointments interactively."""
+    creds = get_credentials()
+    if not creds:
+        print("Missing NEPTUN_EMAIL/NEPTUN_PASSWORD in .env")
+        return ExitCode.UNKNOWN_ERROR
+
+    client = BPSBClient(verbose=args.verbose)
+    if not client.login(creds["email"], creds["password"]):
+        print("Login failed.")
+        return ExitCode.NETWORK_ERROR
+
+    appointments = client.get_appointments()
+    if not appointments:
+        print("No appointments found.")
+        return ExitCode.SUCCESS
+
+    # Display
+    print(f"\n{'='*60}")
+    print(f"  CURRENT APPOINTMENTS ({len(appointments)})")
+    print(f"{'='*60}")
+    for i, a in enumerate(appointments):
+        print(f"  [{i+1}] {a['resource']}  {a['datetime']}  ({a['places']} places)")
+    print(f"{'='*60}")
+
+    choice = input("\nDelete which? Numbers (space-separated), 'all', or Enter to cancel: ").strip()
+    if not choice:
+        return ExitCode.SUCCESS
+
+    if choice.lower() == "all":
+        indices = list(range(len(appointments)))
+    else:
+        try:
+            indices = [int(x) - 1 for x in choice.split()]
+        except ValueError:
+            print("Invalid input.")
+            return ExitCode.UNKNOWN_ERROR
+
+    to_delete = [appointments[i] for i in indices if 0 <= i < len(appointments) and appointments[i].get("delete_id")]
+
+    if not to_delete:
+        print("Nothing to delete.")
+        return ExitCode.SUCCESS
+
+    confirm = input(f"  Delete {len(to_delete)} appointment(s)? (y/n): ").strip().lower()
+    if confirm not in ("y", "yes", "da"):
+        print("  Cancelled.")
+        return ExitCode.SUCCESS
+
+    deleted = 0
+    for a in to_delete:
+        if client.delete_appointment(a["delete_id"]):
+            print(f"  Deleted: {a['datetime']}")
+            deleted += 1
+        else:
+            print(f"  Failed: {a['datetime']}")
+
+    print(f"\n{deleted}/{len(to_delete)} deleted.")
+    return ExitCode.SUCCESS
