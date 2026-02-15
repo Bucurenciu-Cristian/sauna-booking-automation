@@ -249,3 +249,94 @@ def candidate_dates(constraints, days):
             dates.append(ds)
         d += timedelta(days=1)
     return dates
+
+
+def _resolve_subscription(override=None):
+    """Resolve subscription from CLI arg or env."""
+    if override:
+        return {"code": override, "name": "CLI"}
+    subs = load_subscriptions()
+    if subs:
+        return subs[0]
+    print("No subscription codes found. Set NEPTUN_SUBSCRIPTIONS or use -s CODE.")
+    return None
+
+
+def cmd_check(args):
+    """Check availability, display results, optionally book."""
+    t_start = time.time()
+    sub = _resolve_subscription(args.subscription)
+    if not sub:
+        return ExitCode.INVALID_SUBSCRIPTION
+
+    client = BPSBClient(verbose=args.verbose)
+    constraints = client.init_booking_session(sub["code"])
+    if not constraints:
+        print(f"Invalid subscription: {sub['code']}")
+        return ExitCode.INVALID_SUBSCRIPTION
+
+    dates = candidate_dates(constraints, args.days)
+    client.log(f"Checking {len(dates)} dates for {sub['name']}...")
+
+    # Collect all slots
+    db = DB(args.db)
+    session_id = str(uuid.uuid4())[:8]
+    all_results = []  # [(date, time, spots, interval_id)]
+
+    for date_str in dates:
+        slots = client.get_slots_for_date(date_str)
+        for s in slots:
+            db.log_slot(session_id, sub["code"], date_str, s["time"], s["spots"])
+            if s["spots"] > 0:
+                all_results.append((date_str, s["time"], s["spots"], s["interval_id"]))
+        if args.verbose and slots:
+            summary = ", ".join(f"{s['time']}({s['spots']})" for s in slots)
+            print(f"  {date_str}: {summary}")
+
+    db.close()
+    elapsed = time.time() - t_start
+
+    # Filter by target slot if specified
+    if args.slot:
+        matching = [r for r in all_results if args.slot in r[1]]
+    else:
+        matching = all_results
+
+    if not matching:
+        print(f"\nNo availability{f' for {args.slot}' if args.slot else ''} in next {args.days} days.")
+        print(f"({elapsed:.1f}s)")
+        return ExitCode.NO_AVAILABILITY
+
+    # Display results
+    print(f"\n{'='*50}")
+    print(f"  AVAILABLE SLOTS")
+    print(f"{'='*50}")
+    for i, (date, slot_time, spots, _) in enumerate(matching):
+        day = datetime.strptime(date, "%Y-%m-%d").strftime("%a")
+        spot_w = "spot" if spots == 1 else "spots"
+        print(f"  [{i+1}] {date} ({day})  {slot_time}  — {spots} {spot_w}")
+    print(f"{'='*50}")
+    print(f"  ({elapsed:.1f}s, {len(dates)} dates checked)\n")
+
+    # Interactive booking prompt
+    choice = input("Book a slot? Enter number (or press Enter to skip): ").strip()
+    if not choice:
+        return ExitCode.SUCCESS
+
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(matching):
+            date, slot_time, spots, interval_id = matching[idx]
+            confirm = input(f"  Confirm booking {date} {slot_time}? (y/n): ").strip().lower()
+            if confirm in ("y", "yes", "da"):
+                print(f"  Booking...")
+                if client.book_slot(interval_id):
+                    print(f"  Booked! {date} {slot_time}")
+                    return ExitCode.SUCCESS
+                else:
+                    print(f"  Booking failed.")
+                    return ExitCode.BOOKING_FAILED
+    except (ValueError, IndexError):
+        print("  Invalid selection.")
+
+    return ExitCode.SUCCESS
