@@ -149,8 +149,11 @@ class BPSBClient:
         # Phase 2: finalize the booking
         r2 = self.session.get(f"{BOOKING_URL}/final", timeout=15)
         r2.raise_for_status()
-        self.log(f"Finalize response: {r2.url}")
-        return True
+
+        # Verify success: "Programarea a fost adaugata cu succes"
+        success = "adaugata cu succes" in r2.text
+        self.log(f"Finalize: {'confirmed' if success else 'unconfirmed'}")
+        return success
 
     def login(self, email, password):
         """Login to BPSB. Returns True on success."""
@@ -281,6 +284,29 @@ def _resolve_subscription(override=None):
     return None
 
 
+def _verify_booking(date_str, slot_time):
+    """Post-booking verification: log in and confirm the booking exists."""
+    creds = get_credentials()
+    if not creds:
+        return
+    verifier = BPSBClient()
+    if not verifier.login(creds["email"], creds["password"]):
+        return
+    appointments = verifier.get_appointments()
+    if not appointments:
+        print("  (verification: could not load appointments)")
+        return
+    # Convert date format: 2026-03-04 → 04.03.2026
+    d = datetime.strptime(date_str, "%Y-%m-%d")
+    date_ro = d.strftime("%d.%m.%Y")
+    found = any(date_ro in a["datetime"] and slot_time.replace(" ", "") in a["datetime"].replace(" ", "")
+                for a in appointments)
+    if found:
+        print(f"  Verified: booking confirmed in appointments.")
+    else:
+        print(f"  Warning: booking not found in appointments — check manually.")
+
+
 def cmd_check(args):
     """Check availability, display results, optionally book."""
     t_start = time.time()
@@ -344,7 +370,10 @@ def cmd_check(args):
     print(f"{'='*50}")
     print(f"  ({elapsed:.1f}s, {len(dates)} dates checked)\n")
 
-    # Interactive booking prompt
+    # Interactive booking prompt (skip if non-interactive)
+    if not sys.stdin.isatty():
+        return ExitCode.SUCCESS
+
     choice = input("Book a slot? Enter number (or press Enter to skip): ").strip()
     if not choice:
         return ExitCode.SUCCESS
@@ -358,6 +387,7 @@ def cmd_check(args):
                 print(f"  Booking...")
                 if client.book_slot(interval_id):
                     print(f"  Booked! {date} {slot_time}")
+                    _verify_booking(date, slot_time)
                     return ExitCode.SUCCESS
                 else:
                     print(f"  Booking failed.")
@@ -418,6 +448,9 @@ def cmd_delete(args):
     for i, a in enumerate(appointments):
         print(f"  [{i+1}] {a['resource']}  {a['datetime']}  ({a['places']} places)")
     print(f"{'='*60}")
+
+    if not sys.stdin.isatty():
+        return ExitCode.SUCCESS
 
     choice = input("\nDelete which? Numbers (space-separated), 'all', or Enter to cancel: ").strip()
     if not choice:
