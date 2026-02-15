@@ -473,26 +473,30 @@ def cmd_collect(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Neptune — Fast sauna booking CLI")
-    parser.add_argument("-s", "--subscription", help="Subscription code")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
-    parser.add_argument("--db", default=DB_FILE, help="Database path")
+    # Common args shared by all subcommands
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("-s", "--subscription", help="Subscription code")
+    common.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    common.add_argument("--db", default=DB_FILE, help="Database path")
 
+    parser = argparse.ArgumentParser(description="Neptune — Fast sauna booking CLI",
+                                     parents=[common])
     sub = parser.add_subparsers(dest="command")
 
     # check (default)
-    p_check = sub.add_parser("check", help="Check availability and optionally book")
+    p_check = sub.add_parser("check", help="Check availability and optionally book",
+                             parents=[common])
     p_check.add_argument("--slot", default=None, help='Filter by time slot (e.g. "17:30 - 21:00")')
     p_check.add_argument("--days", type=int, default=7, help="Days ahead to check (default: 7)")
 
     # status
-    sub.add_parser("status", help="View current appointments")
+    sub.add_parser("status", help="View current appointments", parents=[common])
 
     # delete
-    sub.add_parser("delete", help="Delete appointments interactively")
+    sub.add_parser("delete", help="Delete appointments interactively", parents=[common])
 
     # collect
-    sub.add_parser("collect", help="Collect availability data (for cron)")
+    sub.add_parser("collect", help="Collect availability data (for cron)", parents=[common])
 
     args = parser.parse_args()
 
