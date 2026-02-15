@@ -135,13 +135,22 @@ class BPSBClient:
         return slots
 
     def book_slot(self, interval_id):
-        """Book a slot by interval ID. Returns True on success."""
+        """Book a slot by interval ID. Two-phase: add to cart, then finalize."""
+        # Phase 1: add to cart
         r = self.session.post(f"{BOOKING_URL}/register",
                               data={"interval": interval_id}, timeout=15)
         r.raise_for_status()
-        # Check for success indicators in response
-        # The register endpoint redirects or shows confirmation
-        return r.status_code == 200
+
+        # Verify item is in cart
+        if "remove/" not in r.text:
+            self.log("Slot not added to cart")
+            return False
+
+        # Phase 2: finalize the booking
+        r2 = self.session.get(f"{BOOKING_URL}/final", timeout=15)
+        r2.raise_for_status()
+        self.log(f"Finalize response: {r2.url}")
+        return True
 
     def login(self, email, password):
         """Login to BPSB. Returns True on success."""
