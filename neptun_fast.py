@@ -25,3 +25,66 @@ class ExitCode:
     BOOKING_FAILED = 3
     NETWORK_ERROR = 4
     UNKNOWN_ERROR = 99
+
+
+class BPSBClient:
+    """HTTP client for BPSB booking system."""
+
+    def __init__(self, verbose=False):
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+        })
+        self.verbose = verbose
+        self.subscription_id = None
+        self.resource_id = None
+
+    def log(self, msg):
+        if self.verbose:
+            print(f"  {msg}")
+
+    def init_booking_session(self, subscription_code):
+        """Walk steps 1-3 to establish a booking session. Returns date constraints."""
+        # Step 1: establish PHP session
+        self.session.get(f"{BOOKING_URL}/step1", timeout=15)
+
+        # Step 2: submit subscription code
+        r2 = self.session.post(f"{BOOKING_URL}/step2",
+                               data={"clientInput": subscription_code}, timeout=15)
+        r2.raise_for_status()
+
+        sub_match = re.search(r'name="subscription"\s+value="(\d+)"', r2.text)
+        res_match = re.search(r'name="resource"\s+value="(\d+)"', r2.text)
+        if not sub_match or not res_match:
+            return None
+
+        self.subscription_id = sub_match.group(1)
+        self.resource_id = res_match.group(1)
+
+        # Step 3: select sauna resource
+        r3 = self.session.post(f"{BOOKING_URL}/step3",
+                               data={"resource": self.resource_id,
+                                     "subscription": self.subscription_id}, timeout=15)
+        r3.raise_for_status()
+
+        return self._parse_date_constraints(r3.text)
+
+    def _parse_date_constraints(self, html):
+        """Extract datepicker config from step3 JS."""
+        constraints = {"disabled_dow": set(), "blackout_dates": set(),
+                       "max_date": None}
+
+        dow_match = re.search(r'daysOfWeekDisabled:\s*"([\d,]+)"', html)
+        if dow_match:
+            constraints["disabled_dow"] = {int(d) for d in dow_match.group(1).split(",")}
+
+        constraints["blackout_dates"] = set(
+            re.findall(r'e\.format\(\)=="(\d{4}-\d{2}-\d{2})"', html)
+        )
+
+        val_end = re.search(r'var valabilityEnd\s*=\s*moment\("(\d{4}-\d{2}-\d{2})"\)', html)
+        if val_end:
+            end = datetime.strptime(val_end.group(1), "%Y-%m-%d")
+            constraints["max_date"] = min(end, datetime.now() + timedelta(days=30))
+
+        return constraints
